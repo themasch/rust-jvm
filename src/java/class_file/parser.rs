@@ -67,11 +67,6 @@ named!(
     do_parse!(name_index: be_u16 >> ( ConstantType::Package { name_index} ) )
 );
 
-fn report_err(input: &[u8], err: u8) -> IResult<&[u8], ConstantType> {
-    println!("das ging schief: {:?}", err);
-    panic!()
-}
-
 named!(
     constant<&[u8], ConstantType>,
     dbg_dmp!(switch!(be_u8,
@@ -151,3 +146,47 @@ named!(
         ( ClassFile { version: (major, minor), constants, access_flags, this_index, super_index, interfaces, fields, methods, attributes } )
     ))
 );
+
+
+#[cfg(test)]
+mod test {
+    use super::read_class_file;
+    use nom::IResult;
+    use java::class_file::ClassFile;
+
+    const CLASSFILE: &'static [u8] = include_bytes!("../../../sample/HelloWorld.class");
+
+
+    fn get_cf() -> ClassFile {
+        read_class_file(CLASSFILE).unwrap().1
+    }
+
+    #[test]
+    fn it_can_read_the_complete_class_file() {
+        let cf = read_class_file(CLASSFILE).unwrap();
+        match cf {
+            ([], _) => (),
+            _ => {
+                println!("{:?}", cf);
+                panic!("cannot read class file")
+            }
+        };
+    }
+
+    #[test]
+    fn it_gets_the_version_correct() {
+        let cf = get_cf();
+        assert_eq!((54, 0), cf.version)
+    }
+
+    #[test]
+    fn it_reads_the_correct_number_of_constants() {
+        let cf = get_cf();
+        assert_eq!(31, cf.constants.len())
+    }
+
+    #[test]
+    fn it_gets_the_class_name_correct() {
+        assert_eq!("HelloWorld", get_cf().get_class_name())
+    }
+}
