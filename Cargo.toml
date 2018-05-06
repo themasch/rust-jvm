@@ -1,0 +1,7 @@
+[package]
+name = "rjvm"
+version = "0.1.0"
+authors = ["Mark Schmale <masch@masch.it>"]
+
+[dependencies]
+nom = { version = "3.2.1", features = [ "verbose-errors"] }
