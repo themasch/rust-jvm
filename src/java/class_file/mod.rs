@@ -2,19 +2,19 @@ mod parser;
 pub use self::parser::read_class_file;
 
 #[derive(Debug)]
-pub struct ClassFile {
+pub struct ClassFile<'a> {
     pub version: (u16, u16),
-    pub constants: Vec<ConstantType>,
+    pub constants: Vec<ConstantType<'a>>,
     pub access_flags: u16,
     pub this_index: u16,
     pub super_index: u16,
     interfaces: Vec<u16>,
-    fields: Vec<Field>,
-    methods: Vec<Method>,
-    attributes: Vec<Attribute>
+    fields: Vec<Field<'a>>,
+    methods: Vec<Method<'a>>,
+    attributes: Vec<Attribute<'a>>
 }
 
-impl ClassFile {
+impl<'a> ClassFile<'a> {
     pub fn get_constant(&self, index: u16) -> Option<&ConstantType> {
         self.constants.get(index as usize - 1)
     }
@@ -35,30 +35,30 @@ impl ClassFile {
 }
 
 #[derive(Debug)]
-struct Field {
+struct Field<'a> {
     access_flags: u16,
     name_index: u16,
     descriptor_index: u16,
-    attributes: Vec<Attribute>,
+    attributes: Vec<Attribute<'a>>,
 }
 
 #[derive(Debug)]
-struct Method {
+struct Method<'a> {
     access_flags: u16,
     name_index: u16,
     descriptor_index: u16,
-    attributes: Vec<Attribute>,
+    attributes: Vec<Attribute<'a>>,
 }
 
 #[derive(Debug)]
-struct Attribute {
+struct Attribute<'a> {
     name_index: u16,
-    info: Vec<u8>,
+    info: &'a [u8],
 }
 
 #[derive(Debug)]
-pub enum ConstantType {
-    Utf8 { value: String },
+pub enum ConstantType<'a> {
+    Utf8 { value: &'a str },
     Integer { value: i32 },
     Float { value: f32 },
     Long { value: i64 },

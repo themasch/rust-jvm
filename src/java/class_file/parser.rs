@@ -42,9 +42,10 @@ named!(
     const_name_and_type<ConstantType>,
     do_parse!(name_index: be_u16 >> descriptor_index: be_u16 >> ( ConstantType::NameAndType { name_index, descriptor_index } ))
 );
+use std::str::from_utf8;
 named!(
     const_utf8<ConstantType>,
-    do_parse!(bytes: length_data!(be_u16) >> ( ConstantType::Utf8 { value: String::from_utf8(bytes.to_vec()).unwrap() } ) )
+    do_parse!(bytes: length_data!(be_u16) >> ( ConstantType::Utf8 { value: from_utf8(bytes).unwrap() } ) )
 );
 named!(
     const_method_handle<ConstantType>,
@@ -94,7 +95,7 @@ named!(
     do_parse!(
         name_index: be_u16 >>
         length:     be_u32 >>
-        info:       count!( be_u8, length as usize ) >>
+        info:       take!( length as usize ) >>
         ( Attribute { name_index, info })
     )
 );
@@ -153,11 +154,13 @@ mod test {
     use super::read_class_file;
     use nom::IResult;
     use java::class_file::ClassFile;
+    use test::Bencher;
 
     const CLASSFILE: &'static [u8] = include_bytes!("../../../sample/HelloWorld.class");
+    const DEMOCLASS: &'static [u8] = include_bytes!("../../../sample/DemoClass.class");
 
 
-    fn get_cf() -> ClassFile {
+    fn get_cf<'a>() -> ClassFile<'a> {
         read_class_file(CLASSFILE).unwrap().1
     }
 
@@ -188,5 +191,12 @@ mod test {
     #[test]
     fn it_gets_the_class_name_correct() {
         assert_eq!("HelloWorld", get_cf().get_class_name())
+    }
+
+    #[bench]
+    fn bench_parse(bench: &mut Bencher) {
+        bench.iter(||  {
+            read_class_file(DEMOCLASS)
+        });
     }
 }
