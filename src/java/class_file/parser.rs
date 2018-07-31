@@ -91,7 +91,102 @@ named!(
 );
 
 named!(
-    attribute<Attribute>,
+    exception_table<(u16, u16, u16, u16)>,
+    do_parse!(
+        start_pc: be_u16   >>
+        end_pc: be_u16     >>
+        handler_pc: be_u16 >>
+        catch_type: be_u16 >>
+        (start_pc, end_pc, handler_pc, catch_type)
+    )
+);
+
+named!(
+    line_number_table<Attribute>,
+    do_parse!(
+        length: be_u32 >>
+        line_numbers: length_count!(
+            be_u16,
+            do_parse!(
+                start: be_u16 >>
+                line: be_u16 >>
+                (start, line)
+            )
+        ) >>
+        (
+            Attribute::LineNumberTable(line_numbers.to_vec())
+        )
+    )
+);
+
+fn select_attribute<'t, 'a>(input: &'t [u8], name: &str, constants: &'a Vec<ConstantType<'a>>) -> IResult<&'t [u8], Attribute<'t>> {
+    match name {
+        "LineNumberTable" => {
+            match line_number_table(input) {
+                IResult::Done(rem, line_numbers) => {
+                    IResult::Done(&rem, line_numbers)
+                }
+                IResult::Incomplete(i) => return IResult::Incomplete(i),
+                IResult::Error(err) => return IResult::Error(err)
+            }
+        }
+        "Code" => {
+            match do_parse!( input,
+                    length: be_u32 >>
+                    max_stack: be_u16 >>
+                    max_locals: be_u16 >>
+                    code: length_data!( be_u32 ) >>
+                    exception_table: length_count!( be_u16, exception_table ) >>
+                    attributes: length_count!( be_u16, call!(attribute, &constants)) >>
+                    (
+                        Attribute::CodeAttribute { length, max_stack, max_locals, code: code.to_vec(), attributes }
+                    )
+                ) {
+                IResult::Done(rem, attribute) => {
+                    IResult::Done(&rem, attribute)
+                }
+                IResult::Incomplete(i) => return IResult::Incomplete(i),
+                IResult::Error(err) => return IResult::Error(err)
+            }
+        }
+        _ => {
+            let nm = String::from(name);
+            match be_u32(input) {
+                IResult::Done(rem, length) => {
+                    println!("length: {}", length);
+                    IResult::Done(&rem[(length as usize)..], Attribute::GenericAttribute { name: nm, info: &rem[0..(length as usize)] })
+                }
+                IResult::Incomplete(i) => return IResult::Incomplete(i),
+                IResult::Error(err) => return IResult::Error(err)
+            }
+        }
+    }
+}
+
+
+fn attribute<'t, 'a>(input: &'t [u8], constants: &'a Vec<ConstantType<'a>>) -> IResult<&'t [u8], Attribute<'t>> {
+    let idx_res = be_u16(input);
+    match idx_res {
+        IResult::Done(remaining, index) => {
+            println!("attr name index: {}", index);
+            match constants.get(index as usize - 1) {
+                Some(ConstantType::Utf8 { value: ref name }) => {
+                    println!("attr name: {}", name);
+                    select_attribute(remaining, name, constants)
+                }
+                _ => {
+                    IResult::Error(error_position!(ErrorKind::Custom(1), remaining))
+                }
+            }
+        }
+        IResult::Incomplete(i) => return IResult::Incomplete(i),
+        IResult::Error(err) => return IResult::Error(err)
+    }
+}
+
+/*
+named_args!(
+    attribute<'a>(constants: &Vec<ConstantType<'a>>)<Attribute<'a>>,
     do_parse!(
         name_index: be_u16 >>
         length:     be_u32 >>
@@ -99,35 +194,35 @@ named!(
         ( Attribute { name_index, info })
     )
 );
-
-named!(
-    field<Field>,
+*/
+named_args!(
+    field<'a>(constants: &'a Vec<ConstantType<'this_is_probably_unique_i_hope_please>>)<Field<'this_is_probably_unique_i_hope_please>>,
     do_parse!(
         access_flags:     be_u16 >>
         name_index:       be_u16 >>
         descriptor_index: be_u16 >>
         attributes_count: be_u16 >>
-        attributes:       count!( attribute, attributes_count as usize ) >>
+        attributes:       count!( call!(attribute, constants), attributes_count as usize ) >>
         ( Field { access_flags, name_index, descriptor_index, attributes } )
     )
 );
 
 
-named!(
-    method<Method>,
+named_args!(
+    method<'a>(constants: &'a Vec<ConstantType<'this_is_probably_unique_i_hope_please>>)<Method<'this_is_probably_unique_i_hope_please>>,
     do_parse!(
         access_flags:     be_u16 >>
         name_index:       be_u16 >>
         descriptor_index: be_u16 >>
         attributes_count: be_u16 >>
-        attributes:       count!( attribute, attributes_count as usize ) >>
+        attributes:       count!( call!(attribute, constants), attributes_count as usize ) >>
         ( Method { access_flags, name_index, descriptor_index, attributes } )
     )
 );
 
 named!(
     pub read_class_file<ClassFile>,
-    dbg_dmp!(do_parse!(
+    dbg!(do_parse!(
         tag!(&[0xCAu8, 0xFEu8, 0xBAu8, 0xBEu8][..]) >>
         minor:              be_u16    >>
         major:              be_u16    >>
@@ -139,11 +234,11 @@ named!(
         interfaces_count:   be_u16    >>
         interfaces:         count!( be_u16, interfaces_count as usize ) >>
         fields_count:       be_u16    >>
-        fields:             count!( field, fields_count as usize ) >>
+        fields:             count!( call!(field, &constants), fields_count as usize ) >>
         methods_count:      be_u16    >>
-        methods:            count!( method, methods_count as usize ) >>
+        methods:            count!( call!(method, &constants), methods_count as usize ) >>
         attributes_count:   be_u16    >>
-        attributes:         count!( attribute, attributes_count as usize ) >>
+        attributes:         count!( call!(attribute, &constants), attributes_count as usize ) >>
         ( ClassFile { version: (major, minor), constants, access_flags, this_index, super_index, interfaces, fields, methods, attributes } )
     ))
 );
@@ -152,9 +247,7 @@ named!(
 #[cfg(test)]
 mod test {
     use super::read_class_file;
-    use nom::IResult;
     use java::class_file::ClassFile;
-    use test::Bencher;
 
     const CLASSFILE: &'static [u8] = include_bytes!("../../../sample/HelloWorld.class");
     const DEMOCLASS: &'static [u8] = include_bytes!("../../../sample/DemoClass.class");
@@ -191,12 +284,5 @@ mod test {
     #[test]
     fn it_gets_the_class_name_correct() {
         assert_eq!("HelloWorld", get_cf().get_class_name())
-    }
-
-    #[bench]
-    fn bench_parse(bench: &mut Bencher) {
-        bench.iter(||  {
-            read_class_file(DEMOCLASS)
-        });
     }
 }

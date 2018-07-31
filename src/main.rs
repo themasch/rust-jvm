@@ -1,9 +1,7 @@
-#![feature(test)]
 mod java;
 
 #[macro_use]
 extern crate nom;
-extern crate test;
 
 use java::class_file::{read_class_file, ClassFile};
 use std::fs::File;

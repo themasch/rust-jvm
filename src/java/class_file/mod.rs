@@ -1,4 +1,5 @@
 mod parser;
+
 pub use self::parser::read_class_file;
 
 #[derive(Debug)]
@@ -11,7 +12,7 @@ pub struct ClassFile<'a> {
     interfaces: Vec<u16>,
     fields: Vec<Field<'a>>,
     methods: Vec<Method<'a>>,
-    attributes: Vec<Attribute<'a>>
+    attributes: Vec<Attribute<'a>>,
 }
 
 impl<'a> ClassFile<'a> {
@@ -51,9 +52,19 @@ struct Method<'a> {
 }
 
 #[derive(Debug)]
-struct Attribute<'a> {
-    name_index: u16,
-    info: &'a [u8],
+enum Attribute<'a> {
+    LineNumberTable(Vec<(u16, u16)>),
+    CodeAttribute {
+        length: u32,
+        max_stack: u16,
+        max_locals: u16,
+        code: Vec<u8>,
+        attributes: Vec<Attribute<'a>>,
+    },
+    GenericAttribute {
+        name: String,
+        info: &'a [u8],
+    },
 }
 
 #[derive(Debug)]
