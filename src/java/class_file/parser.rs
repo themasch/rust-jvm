@@ -132,14 +132,14 @@ fn select_attribute<'t, 'a>(input: &'t [u8], name: &str, constants: &'a Vec<Cons
         }
         "Code" => {
             match do_parse!( input,
-                    length: be_u32 >>
+                    be_u32 >>
                     max_stack: be_u16 >>
                     max_locals: be_u16 >>
                     code: length_data!( be_u32 ) >>
                     exception_table: length_count!( be_u16, exception_table ) >>
                     attributes: length_count!( be_u16, call!(attribute, &constants)) >>
                     (
-                        Attribute::CodeAttribute { length, max_stack, max_locals, code: code.to_vec(), attributes }
+                        Attribute::CodeAttribute( CodeBlock { max_stack, max_locals, code: code.to_vec(), attributes } )
                     )
                 ) {
                 IResult::Done(rem, attribute) => {
@@ -168,10 +168,8 @@ fn attribute<'t, 'a>(input: &'t [u8], constants: &'a Vec<ConstantType<'a>>) -> I
     let idx_res = be_u16(input);
     match idx_res {
         IResult::Done(remaining, index) => {
-            println!("attr name index: {}", index);
             match constants.get(index as usize - 1) {
                 Some(ConstantType::Utf8 { value: ref name }) => {
-                    println!("attr name: {}", name);
                     select_attribute(remaining, name, constants)
                 }
                 _ => {

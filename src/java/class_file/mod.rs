@@ -1,5 +1,7 @@
 mod parser;
+pub mod dissasm;
 
+use java::instructions::*;
 pub use self::parser::read_class_file;
 
 #[derive(Debug)]
@@ -9,10 +11,10 @@ pub struct ClassFile<'a> {
     pub access_flags: u16,
     pub this_index: u16,
     pub super_index: u16,
-    interfaces: Vec<u16>,
-    fields: Vec<Field<'a>>,
-    methods: Vec<Method<'a>>,
-    attributes: Vec<Attribute<'a>>,
+    pub interfaces: Vec<u16>,
+    pub fields: Vec<Field<'a>>,
+    pub methods: Vec<Method<'a>>,
+    pub attributes: Vec<Attribute<'a>>,
 }
 
 impl<'a> ClassFile<'a> {
@@ -36,7 +38,7 @@ impl<'a> ClassFile<'a> {
 }
 
 #[derive(Debug)]
-struct Field<'a> {
+pub struct Field<'a> {
     access_flags: u16,
     name_index: u16,
     descriptor_index: u16,
@@ -44,23 +46,46 @@ struct Field<'a> {
 }
 
 #[derive(Debug)]
-struct Method<'a> {
-    access_flags: u16,
-    name_index: u16,
-    descriptor_index: u16,
-    attributes: Vec<Attribute<'a>>,
+pub struct Method<'a> {
+    pub access_flags: u16,
+    pub name_index: u16,
+    pub descriptor_index: u16,
+    pub attributes: Vec<Attribute<'a>>,
+}
+
+impl<'a> Method<'a> {
+    fn get_code(&self) -> Option<&CodeBlock<'a>> {
+        self.attributes.iter()
+            .filter_map(
+                | attr| match attr {
+                    Attribute::CodeAttribute(code) => Some(code),
+                    _ => None
+                }
+            )
+            .collect::<Vec<&CodeBlock>>()
+            .first()
+            .map(| x | *x )
+    }
 }
 
 #[derive(Debug)]
-enum Attribute<'a> {
+pub struct CodeBlock<'a> {
+    max_stack: u16,
+    max_locals: u16,
+    code: Vec<u8>,
+    attributes: Vec<Attribute<'a>>,
+}
+
+impl<'a> CodeBlock<'a> {
+    fn instructions(&self) -> Result<Vec<Instruction>, ReadInstructionError<&[u8]>> {
+        Instruction::read_all(&self.code[..])
+    }
+}
+
+#[derive(Debug)]
+pub enum Attribute<'a> {
     LineNumberTable(Vec<(u16, u16)>),
-    CodeAttribute {
-        length: u32,
-        max_stack: u16,
-        max_locals: u16,
-        code: Vec<u8>,
-        attributes: Vec<Attribute<'a>>,
-    },
+    CodeAttribute(CodeBlock<'a>),
     GenericAttribute {
         name: String,
         info: &'a [u8],

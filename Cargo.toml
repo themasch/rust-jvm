@@ -5,3 +5,4 @@ authors = ["Mark Schmale <masch@masch.it>"]
 
 [dependencies]
 nom = { version = "3.2.1", features = [ "verbose-errors"] }
+failure = "0.1.1"

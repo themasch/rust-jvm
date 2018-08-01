@@ -2,11 +2,15 @@ mod java;
 
 #[macro_use]
 extern crate nom;
+#[macro_use]
+extern crate failure;
 
 use java::class_file::{read_class_file, ClassFile};
 use std::fs::File;
 use std::env;
 use std::io::Read;
+use java::class_file::Attribute;
+use java::class_file::CodeBlock;
 
 
 fn main() {
@@ -26,4 +30,9 @@ fn main() {
     println!("{:#?}", report);
 
     println!("{:?}", report.get_class_name());
+
+    report.methods.iter().for_each(|method| {
+        println!("{:?}", report.constants.get(usize::from(method.name_index - 1)));
+        println!("{}", java::class_file::dissasm::dissassemble(method))
+    })
 }
