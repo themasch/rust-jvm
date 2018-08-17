@@ -139,14 +139,42 @@ impl<'a> Runtime<'a> {
                                 other_class.unwrap().clone()
                             };
 
+
                             if cls_name.eq(class.get_class_name()) {
-                                //let method = class.methods.get(nam)
-                                //self.run_method(method, class.clone());
+                                let name_and_type = class.get_constant(*name_and_type_index);
+
+                                let name_index = match name_and_type {
+                                    Some(ConstantType::NameAndType { name_index, .. }) => {
+                                        name_index
+                                    },
+                                    _ => {
+                                        eprintln!("method index {} not found class {}", name_and_type_index, cls_name);
+                                        return;
+                                    }
+                                };
+
+                                let name = match class.get_constant(*name_index) {
+                                    Some(ConstantType::Utf8 { value }) => {
+                                        value
+                                    },
+                                    _ => {
+                                        eprintln!("method name index {} not found class {}", name_index, cls_name);
+                                        return;
+                                    }
+                                };
+                                //TODO: we should match the type here, too to find overloaded methods.
+                                let method = class.methods.iter().find( | method | String::from(method.name) == String::from(*name));
+                                println!("{:?}", method);
+                                if method.is_none() {
+                                    eprintln!("method named {} not found class {}", name, cls_name);
+                                    return;
+                                }
+                                self.run_method(method.unwrap(), class.clone());
                             }
                             //
                         }
                         Some(_) => {
-                            eprintln!("invalid method offset {}", method_offset);
+                            eprintln!("invalid method offset{}", method_offset);
                             return;
                         }
                         None => {

@@ -22,12 +22,12 @@ fn main() {
         f.read_to_end(&mut buffer).expect("cannot read file");
         buffer.as_slice()
     } else {
-        include_bytes!("../sample/DemoClass.class")
+        include_bytes!("../sample/Tiny.class")
     };
 
 
     let report: ClassFile = read_class_file(content).unwrap().1;
-    println!("{:#?}", report);
+    //println!("{:#?}", report);
 
     println!("{:?}", report.get_class_name());
 
