@@ -4,7 +4,15 @@ use java::class_file::ClassFile;
 use std::path::PathBuf;
 use std::sync::Arc;
 use java::class_file::ConstantType;
+use java::class_file::ValueType;
 
+/// these type of errors should not happen at all.
+/// Triggering one of these means the jvm is probably buggy since the compiler should prevent these.
+/// This is for stuff like "we tried to pop the stack but it was empty" or "i need to load an int,
+/// but theres a string on the stack"….
+///
+/// we might trigger something like this when a class file does not contain the expected methods.
+/// this is something the compiler cannot prevent since the user could just swap out the class file.
 #[derive(Debug, Fail)]
 pub enum RuntimeError {
     #[fail(display = "runtime error: {}", message)]
@@ -20,12 +28,14 @@ pub enum RuntimeError {
 #[derive(Debug)]
 enum LocalVariable {
     None,
+    Null,
     Integer(i64),
 }
 
 #[derive(Debug)]
 enum StackValue {
     None,
+    Null,
     Integer(i64),
 }
 
@@ -52,6 +62,8 @@ impl StackFrame {
         vec
     }
 
+    /// creates a new `StackFrame` for a given method.
+    /// also inits the local variables with the given list of variables
     fn for_method(method: &Method, mut variables: Vec<LocalVariable>) -> StackFrame {
         let locals = usize::from(method.get_code().unwrap().max_locals);
         let stack = usize::from(method.get_code().unwrap().max_stack);
@@ -158,7 +170,8 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    //TODO: Result benutzten, du esel!
+    /// stores the top stack value into the local variable at `offset` as an integer
+    /// since our stack is typed, we only do this when the type of the uppermost stack value is integer, too.
     fn exec_istore(stack_frame: &mut StackFrame, offset: usize) -> Result<(), RuntimeError> {
         match stack_frame.pop_stack() {
             Some(StackValue::Integer(intvalue)) => {
@@ -170,7 +183,12 @@ impl<'a> Runtime<'a> {
             }
         }
     }
-    //TODO: Result benutzten, du esel!
+
+    /// loads an integer from local variable `offset` onto the stack.
+    /// fails if
+    ///  - the local variable is not an integer
+    ///  - the local variable is not even defined
+    ///  - the local variable is out of scope
     fn exec_iload(stack_frame: &mut StackFrame, offset: usize) -> Result<(), RuntimeError> {
         let intvalue = match stack_frame.get_variable(offset) {
             Some(LocalVariable::Integer(intvalue)) => {
@@ -194,12 +212,7 @@ impl<'a> Runtime<'a> {
         for instruction in method.instructions() {
             println!("{:?}", instruction);
             match instruction {
-                // 10: pushes a byte onto the stack as an integer
-                Instruction::BIPush(value) =>
-                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
-                Instruction::SIPush(value) =>
-                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
-
+                //00
                 Instruction::IConstm1(()) => stack_frame.push_stack(StackValue::Integer(-1)),
                 Instruction::IConst0(()) => stack_frame.push_stack(StackValue::Integer(0)),
                 Instruction::IConst1(()) => stack_frame.push_stack(StackValue::Integer(1)),
@@ -207,75 +220,54 @@ impl<'a> Runtime<'a> {
                 Instruction::IConst3(()) => stack_frame.push_stack(StackValue::Integer(3)),
                 Instruction::IConst4(()) => stack_frame.push_stack(StackValue::Integer(4)),
                 Instruction::IConst5(()) => stack_frame.push_stack(StackValue::Integer(5)),
+                // 10...
+                Instruction::BIPush(value) =>
+                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
+                Instruction::SIPush(value) =>
+                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
+                Instruction::ILoad(offset) => Runtime::exec_iload(&mut stack_frame, usize::from(offset))?,
+                Instruction::ILoad0(()) => Runtime::exec_iload(&mut stack_frame, 0)?,
+                Instruction::ILoad1(()) => Runtime::exec_iload(&mut stack_frame, 1)?,
+                Instruction::ILoad2(()) => Runtime::exec_iload(&mut stack_frame, 2)?,
+                Instruction::ILoad3(()) => Runtime::exec_iload(&mut stack_frame, 3)?,
+                // 20..
+                // 30..
+                Instruction::IStore(offset) => Runtime::exec_istore(&mut stack_frame, usize::from(offset))?,
+                Instruction::IStore0(()) => Runtime::exec_istore(&mut stack_frame, 0)?,
 
-                Instruction::IStore(offset) => {
-                    // 36: store int value into variable 1
-                    Runtime::exec_istore(&mut stack_frame, usize::from(offset))?;
-                }
-                Instruction::IStore0(()) => {
-                    // 3b: store int value into variable 1
-                    Runtime::exec_istore(&mut stack_frame, 0)?;
-                }
-                Instruction::IStore1(()) => {
-                    // 3c: store int value into variable 1
-                    Runtime::exec_istore(&mut stack_frame, 1)?;
-                }
-                Instruction::IStore2(()) => {
-                    // 3d: store int value into variable 1
-                    Runtime::exec_istore(&mut stack_frame, 2)?;
-                }
-                Instruction::IStore3(()) => {
-                    // 3e: store int value into variable 3
-                    Runtime::exec_istore(&mut stack_frame, 3)?;
-                }
+                Instruction::IStore1(()) => Runtime::exec_istore(&mut stack_frame, 1)?,
 
-                Instruction::ILoad(offset) => {
-                    //15: load an int from local variable {offset} to the stack
-                    Runtime::exec_iload(&mut stack_frame, usize::from(offset))?;
-                }
-                Instruction::ILoad0(()) => {
-                    //1a: load an int from local variable 0 to the stack
-                    Runtime::exec_iload(&mut stack_frame, 0)?;
-                }
-                Instruction::ILoad1(()) => {
-                    //1a: load an int from local variable 1 to the stack
-                    Runtime::exec_iload(&mut stack_frame, 1)?;
-                }
-                Instruction::ILoad2(()) => {
-                    //1c: load an int from local variable 2 to the stack
-                    Runtime::exec_iload(&mut stack_frame, 2)?;
-                }
-                Instruction::ILoad3(()) => {
-                    //1d: load an int from local variable 3 to the stack
-                    Runtime::exec_iload(&mut stack_frame, 3)?;
+                Instruction::IStore2(()) => Runtime::exec_istore(&mut stack_frame, 2)?,
+
+                Instruction::IStore3(()) => Runtime::exec_istore(&mut stack_frame, 3)?,
+                // 40..
+                // 50..
+                // 60..
+                Instruction::IAdd(()) => match (stack_frame.pop_stack(), stack_frame.pop_stack()) {
+                    (Some(StackValue::Integer(lh)), Some(StackValue::Integer(rh))) =>
+                        stack_frame.push_stack(StackValue::Integer(lh + rh)),
+                    (Some(_), Some(_)) =>
+                        return Err(RuntimeError::StackType { expected: format!("integer") }),
+                    (None, None) | (Some(_), None) =>
+                        return Err(RuntimeError::EmptyStack),
+                    _ =>
+                        return Err(RuntimeError::GenericError { message: format!("IAdd") })
                 }
 
-                Instruction::IAdd(()) => {
-                    match (stack_frame.pop_stack(), stack_frame.pop_stack()) {
-                        (Some(StackValue::Integer(lh)), Some(StackValue::Integer(rh))) => {
-                            stack_frame.push_stack(StackValue::Integer(lh + rh));
-                        }
-                        _ => return Err(RuntimeError::GenericError { message: format!("IAdd") })
-                    }
-                }
-
+                // a0..
                 Instruction::IfICmpGE(instruction) => {
                     // would be nice to know the instruction offset now…
+                    // additionally we need a way to "jump" to that instruction. currently we are just looping from top to bottom
                 }
 
-                Instruction::IReturn(()) => {
-                    match stack_frame.pop_stack() {
-                        Some(StackValue::Integer(ret)) => return_value = Some(StackValue::Integer(ret)),
-                        Some(_) => return Err(RuntimeError::StackType { expected: format!("Integer") }),
-                        None => return Err(RuntimeError::EmptyStack)
-                    }
+                Instruction::IReturn(()) => match stack_frame.pop_stack() {
+                    Some(StackValue::Integer(ret)) => return_value = Some(StackValue::Integer(ret)),
+                    Some(_) => return Err(RuntimeError::StackType { expected: format!("Integer") }),
+                    None => return Err(RuntimeError::EmptyStack)
                 }
 
-                Instruction::Return(()) => {
-                    return_value = None;
-                }
-
-                // b8: invoke a static method
+                // b0..
+                Instruction::Return(()) => return_value = None,
                 Instruction::InvokeStatic(method_offset) => {
                     match class.get_constant(method_offset) {
                         Some(ConstantType::MethodRef { class_index, name_and_type_index }) => {
@@ -299,6 +291,7 @@ impl<'a> Runtime<'a> {
                                     match stack_frame.pop_stack() {
                                         Some(StackValue::Integer(intvalue)) => Ok(LocalVariable::Integer(intvalue)),
                                         Some(StackValue::None) => Ok(LocalVariable::None), //??? None => undefined, Null => null.
+                                        Some(StackValue::Null) => Ok(LocalVariable::Null),
                                         None => Err(RuntimeError::EmptyStack)
                                     }
                                 }).collect::<Result<Vec<LocalVariable>, RuntimeError>>()?;
@@ -330,6 +323,21 @@ impl<'a> Runtime<'a> {
 
             println!("{:?}, return {:?}", stack_frame, return_value);
         }
+
+        // this is just here for internal verification.
+        // the compiler should prevent these type of errors.
+        // if something like this happens, the jvm has f**ked up, or the bytecode is broken
+        match method.get_signature().return_type {
+            ValueType::Void => if return_value.is_some() {
+                return Err(RuntimeError::GenericError { message: format!("invalid return type. expected void.") });
+            },
+            ValueType::Integer => match return_value {
+                Some(StackValue::Integer(_)) => (),
+                Some(StackValue::Null) => (),
+                _ => return Err(RuntimeError::GenericError { message: format!("invalid return type. expected integer.") })
+            },
+            _ => (),
+        };
 
         Ok(return_value)
     }

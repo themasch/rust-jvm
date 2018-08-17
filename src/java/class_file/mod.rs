@@ -105,7 +105,7 @@ pub enum ValueType {
 
 #[derive(Debug)]
 pub struct MethodDescriptor {
-    return_type: ValueType,
+    pub return_type: ValueType,
     pub arguments: Vec<ValueType>,
 }
 
