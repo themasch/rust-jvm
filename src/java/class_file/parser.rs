@@ -2,6 +2,50 @@ use nom::*;
 
 use super::*;
 
+use std::string::String;
+use std::str::from_utf8;
+
+named!(
+    parse_type<&[u8], ValueType>,
+    dbg_dmp!(switch!(take!(1),
+        b"L" => do_parse!( tn: map_res!(take_until!(";"), from_utf8) >> (ValueType::Object(String::from(tn)))) |
+        b"I" => value!(ValueType::Integer) |
+        b"V" => value!(ValueType::Void) |
+        b"[" => do_parse!( ele: parse_type >> (ValueType::Array(Box::new(ele)))) |
+        _ => value!(ValueType::Void)
+    ))
+);
+
+pub fn param_list(input: &[u8]) -> IResult<&[u8], Vec<ValueType>> {
+    if input[0] != b'(' {
+        return Err(Err::Incomplete(Needed::Size(2)));
+    }
+
+    let mut input = &input[1..];
+    let mut vec = Vec::new();
+    loop {
+        if input[0] == b')' {
+            return Ok((&input[1..], vec));
+        }
+
+        match parse_type(input) {
+            Ok((rem, typ)) => {
+                vec.push(typ);
+                input = rem;
+            },
+            Err(err) => return Err(err)
+        }
+    }.clone()
+}
+
+named!(
+    pub method_desc<&[u8], (Vec<ValueType>, ValueType)>,
+    dbg_dmp!(tuple!(
+        param_list,
+        parse_type
+    ))
+);
+
 named!(
     const_class<ConstantType>,
     do_parse!(name_index: be_u16 >> ( ConstantType::Class { name_index } ) )
@@ -42,7 +86,6 @@ named!(
     const_name_and_type<ConstantType>,
     do_parse!(name_index: be_u16 >> descriptor_index: be_u16 >> ( ConstantType::NameAndType { name_index, descriptor_index } ))
 );
-use std::str::from_utf8;
 named!(
     const_utf8<ConstantType>,
     do_parse!(bytes: length_data!(be_u16) >> ( ConstantType::Utf8 { value: from_utf8(bytes).unwrap() } ) )
@@ -123,11 +166,10 @@ fn select_attribute<'t, 'a>(input: &'t [u8], name: &str, constants: &'a Vec<Cons
     match name {
         "LineNumberTable" => {
             match line_number_table(input) {
-                IResult::Done(rem, line_numbers) => {
-                    IResult::Done(&rem, line_numbers)
+                Ok((rem, line_numbers)) => {
+                    Ok((&rem, line_numbers))
                 }
-                IResult::Incomplete(i) => return IResult::Incomplete(i),
-                IResult::Error(err) => return IResult::Error(err)
+                Err(err) => return Err(err)
             }
         }
         "Code" => {
@@ -142,57 +184,39 @@ fn select_attribute<'t, 'a>(input: &'t [u8], name: &str, constants: &'a Vec<Cons
                         Attribute::CodeAttribute( CodeBlock { max_stack, max_locals, code: code.to_vec(), attributes } )
                     )
                 ) {
-                IResult::Done(rem, attribute) => {
-                    IResult::Done(&rem, attribute)
-                }
-                IResult::Incomplete(i) => return IResult::Incomplete(i),
-                IResult::Error(err) => return IResult::Error(err)
+                Ok((rem, attribute)) => Ok((&rem, attribute)),
+                Err(err) => return Err(err)
             }
         }
         _ => {
             let nm = String::from(name);
             match be_u32(input) {
-                IResult::Done(rem, length) => {
-                    println!("length: {}", length);
-                    IResult::Done(&rem[(length as usize)..], Attribute::GenericAttribute { name: nm, info: &rem[0..(length as usize)] })
+                Ok((rem, length)) => {
+                    Ok((&rem[(length as usize)..], Attribute::GenericAttribute { name: nm, info: &rem[0..(length as usize)] }))
                 }
-                IResult::Incomplete(i) => return IResult::Incomplete(i),
-                IResult::Error(err) => return IResult::Error(err)
+                Err(err) => return Err(err)
             }
         }
     }
 }
 
-
 fn attribute<'t, 'a>(input: &'t [u8], constants: &'a Vec<ConstantType<'a>>) -> IResult<&'t [u8], Attribute<'t>> {
     let idx_res = be_u16(input);
     match idx_res {
-        IResult::Done(remaining, index) => {
+        Ok((remaining, index)) => {
             match constants.get(index as usize - 1) {
                 Some(ConstantType::Utf8 { value: ref name }) => {
                     select_attribute(remaining, name, constants)
                 }
                 _ => {
-                    IResult::Error(error_position!(ErrorKind::Custom(1), remaining))
+                    Err(Err::Error(error_position!(remaining, ErrorKind::Custom(1))))
                 }
             }
         }
-        IResult::Incomplete(i) => return IResult::Incomplete(i),
-        IResult::Error(err) => return IResult::Error(err)
+        Err(err) => return Err(err)
     }
 }
 
-/*
-named_args!(
-    attribute<'a>(constants: &Vec<ConstantType<'a>>)<Attribute<'a>>,
-    do_parse!(
-        name_index: be_u16 >>
-        length:     be_u32 >>
-        info:       take!( length as usize ) >>
-        ( Attribute { name_index, info })
-    )
-);
-*/
 named_args!(
     field<'a>(constants: &'a Vec<ConstantType<'this_is_probably_unique_i_hope_please>>)<Field<'this_is_probably_unique_i_hope_please>>,
     do_parse!(
@@ -214,7 +238,19 @@ named_args!(
         descriptor_index: be_u16 >>
         attributes_count: be_u16 >>
         attributes:       count!( call!(attribute, constants), attributes_count as usize ) >>
-        ( Method { access_flags, name_index, descriptor_index, attributes } )
+        ( Method {
+            access_flags,
+            name: match constants.get(usize::from(name_index - 1)).unwrap() {
+                ConstantType::Utf8 { value: str } => str,
+                _ => panic!("wrong constant type")
+            },
+            descriptor: match constants.get(usize::from(descriptor_index - 1)).unwrap() {
+                ConstantType::Utf8 { value: str } => str,
+                _ => panic!("wrong constant type")
+            },
+            attributes
+          }
+        )
     )
 );
 
@@ -282,5 +318,33 @@ mod test {
     #[test]
     fn it_gets_the_class_name_correct() {
         assert_eq!("HelloWorld", get_cf().get_class_name())
+    }
+
+
+    ///////// method descriptor
+    use super::*;
+    use nom::*;
+    use java::class_file::ValueType;
+
+    #[test]
+    fn test_param_list_int_int() {
+        let res = param_list(b"(II)");
+        let vec = vec![ValueType::Integer, ValueType::Integer];
+
+        match res {
+            Ok((_, rvec)) => assert_eq!(rvec, vec),
+            _ => assert_eq!(true, false)
+        };
+    }
+
+    #[test]
+    fn test_method_desc_void() {
+        let input = b"()V";
+        let vec = vec![];
+        let retvalue = ValueType::Void;
+        match method_desc(b"()V") {
+            Ok((_, rvec)) => assert_eq!(rvec, (vec, retvalue)),
+            _ => assert_eq!(true, false)
+        };
     }
 }

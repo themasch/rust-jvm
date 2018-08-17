@@ -1,17 +1,16 @@
 use java::class_file::Method;
 use java::instructions::Instruction;
-use nom::*;
 
-pub fn dissassemble<'a>(method: &Method<'a>) -> String {
-    let instructions: Vec<Instruction> = match method.get_code().unwrap().instructions() {
+pub fn disassemble<'a>(method: &Method<'a>) -> String {
+    let code_block = method.get_code().unwrap();
+    let instructions: Vec<Instruction> = match code_block.instructions() {
         Ok(instr) => instr,
         Err(err) => panic!("{:?}", err)
     };
 
-    return instructions.iter().map(| instruction | {
+    instructions.iter().map(| instruction | {
         format!("> {:?}\n", instruction)
-    }).collect::<String>();
+    }).collect::<String>()
 
-    //return format!("{:x?}", code.code);
 }
 

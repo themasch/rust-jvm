@@ -29,13 +29,13 @@ macro_rules! instruction {
                         }
 
                         match Instruction::read(remaining) {
-                            IResult::Done(rem, ins) => {
+                            Ok((rem, ins)) => {
                                 vec.push(ins);
                                 remaining = rem;
                             },
-                            IResult::Error(Err::Code(ErrorKind::Custom(42))) => return Result::Err(ReadInstructionError::InvalidOpcode { opcode: remaining[0] }),
-                            IResult::Error(err) => return Result::Err(ReadInstructionError::ParsingError(err)),
-                            IResult::Incomplete(_) => return Result::Err(ReadInstructionError::ParsingIncomplete)
+                            Err(Err::Incomplete(_)) => return Result::Err(ReadInstructionError::ParsingIncomplete),
+                            Err(Err::Error(Context::Code(_, ErrorKind::Custom(42)))) => return Result::Err(ReadInstructionError::InvalidOpcode { opcode: remaining[0] }),
+                            Err(err) => return Result::Err(ReadInstructionError::ParsingError(err))
                         };
                     }
 
@@ -45,15 +45,13 @@ macro_rules! instruction {
                 fn read(input: &[u8]) -> IResult<&[u8], Instruction> {
                     match be_u8(input) {
                         $(
-                            IResult::Done(rem, $num) => match do_parse!(rem, $($parser)* ) {
-                                IResult::Done(rem, ins) => IResult::Done(rem, Instruction::$name(ins)),
-                                IResult::Error(err) => IResult::Error(err),
-                                IResult::Incomplete(_) => panic!("incomplete code")
+                            Ok((rem, $num)) => match do_parse!(rem, $($parser)* ) {
+                                Ok((rem, ins)) => Ok((rem, Instruction::$name(ins))),
+                                Err(err) => Err(err),
                             }
                         ),*,
-                        IResult::Done(_, _) => IResult::Error(Err::Code(ErrorKind::Custom(42))),
-                        IResult::Error(err) => IResult::Error(err),
-                        IResult::Incomplete(_) => panic!("incomplete code")
+                        Ok((_, _)) => Err(Err::Error(error_position!(input, ErrorKind::Custom(42)))),
+                        Err(err) => Err(err),
                     }
                 }
           }
