@@ -21,8 +21,12 @@ pub enum RuntimeError {
     StackType { expected: String },
     #[fail(display = "runtime error: stack poped when empty")]
     EmptyStack,
-    #[fail(display = "runtime error: stack poped when empty")]
+    #[fail(display = "runtime error: method not found")]
     MethodNotFound,
+    #[fail(display = "runtime error: no such variable ")]
+    VariableOutOfScope,
+    #[fail(display = "runtime error: variable at index {} has the wrong type. expected: {}", offset, expected)]
+    VariableType { expected: String, offset: usize },
 }
 
 #[derive(Debug)]
@@ -211,6 +215,11 @@ impl<'a> Runtime<'a> {
         println!("{:?}", stack_frame);
         for instruction in method.instructions() {
             println!("{:?}", instruction);
+
+            // since most of the instructions just operate on the StackFrame, and the return value
+            // it might be useful to move these implementations somewhere else.
+            // although some instructions actually need more knownledge about the context, like the
+            // current class, loaded classes, change the next instruction etc.
             match instruction {
                 //00
                 Instruction::IConstm1(()) => stack_frame.push_stack(StackValue::Integer(-1)),
@@ -252,6 +261,12 @@ impl<'a> Runtime<'a> {
                         return Err(RuntimeError::EmptyStack),
                     _ =>
                         return Err(RuntimeError::GenericError { message: format!("IAdd") })
+                }
+                // 80..
+                Instruction::IInc((offset, value)) => match stack_frame.get_variable_mut(usize::from(offset)) {
+                    Some(LocalVariable::Integer(intvalue)) => *intvalue = *intvalue + 1,
+                    Some(_) => return Err(RuntimeError::VariableType { expected: format!("integer"), offset: usize::from(offset) }),
+                    None => return Err(RuntimeError::VariableOutOfScope)
                 }
 
                 // a0..
@@ -341,4 +356,9 @@ impl<'a> Runtime<'a> {
 
         Ok(return_value)
     }
+}
+
+#[cfg(test)]
+mod test {
+    //TODO: write some test. at least for run_method.
 }
