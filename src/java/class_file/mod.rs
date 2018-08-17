@@ -37,6 +37,33 @@ impl<'a> ClassFile<'a> {
             _ => panic!("cannot read class name")
         }
     }
+
+    pub fn get_method_from_nat(&self, nat_index: u16) -> Option<&Method> {
+        let name_and_type = self.get_constant(nat_index);
+
+        let (name_index, type_index) = match name_and_type {
+            Some(ConstantType::NameAndType { name_index, descriptor_index }) => {
+                (name_index, descriptor_index)
+            }
+            _ => return None
+        };
+
+        let name = match self.get_constant(*name_index) {
+            Some(ConstantType::Utf8 { value }) => {
+                *value
+            }
+            _ => return None
+        };
+
+        let type_desc = match self.get_constant(*type_index) {
+            Some(ConstantType::Utf8 { value }) => {
+                *value
+            }
+            _ => return None
+        };
+
+        self.methods.iter().find(|method| method.name == name && method.descriptor == type_desc)
+    }
 }
 
 #[derive(Debug)]
@@ -79,7 +106,7 @@ pub enum ValueType {
 #[derive(Debug)]
 pub struct MethodDescriptor {
     return_type: ValueType,
-    arguments: Vec<ValueType>,
+    pub arguments: Vec<ValueType>,
 }
 
 use nom::IResult;
