@@ -92,7 +92,12 @@ impl StackFrame {
     }
 
     fn set_variable(&mut self, index: usize, var: LocalVariable) {
-        self.local_variables.insert(index, var)
+        if let Some(local_var) = self.local_variables.get_mut(index) {
+            *local_var = var;
+            return;
+        }
+
+        self.local_variables.insert(index, var);
     }
 
     fn pop_stack(&mut self) -> Option<StackValue> {
@@ -109,7 +114,8 @@ impl StackFrame {
 /// has been executed
 enum InstructionResult {
     Continue,
-    Goto(i32),
+    GotoRelative(i16),
+    GotoAbsolute(usize),
     Return(Option<StackValue>),
 }
 
@@ -289,17 +295,26 @@ impl<'a> Runtime<'a> {
 
             // a0..
             Instruction::IfICmpGE(instruction) => {
-                // would be nice to know the instruction offset now…
-                // additionally we need a way to "jump" to that instruction. currently we are just looping from top to bottom
+                match (stack_frame.pop_stack(), stack_frame.pop_stack()) {
+                    (Some(StackValue::Integer(b)), Some(StackValue::Integer(a))) => {
+                        println!("if_icmp_ge {} >= {}?", a, b);
+                        return if a >= b {
+                            Ok(InstructionResult::GotoRelative(*instruction))
+                        } else {
+                            Ok(InstructionResult::Continue)
+                        };
+                    }
+                    (Some(_), Some(_)) =>
+                        return Err(RuntimeError::StackType { expected: format!("integer") }),
+                    (None, None) | (Some(_), None) =>
+                        return Err(RuntimeError::EmptyStack),
+                    _ =>
+                        return Err(RuntimeError::GenericError { message: format!("IfICmpGE") })
+                }
             }
 
             Instruction::Goto(offset) => {
-                /*let new_offset = offset as i64 + instruction_counter as i64;
-                println!("GOTO: {} + {} = {}", offset, instruction_counter, new_offset);
-                if new_offset < 0 {
-                    panic!();
-                }
-                ins.goto(usize::from(new_offset as u16));*/
+                return Ok(InstructionResult::GotoRelative(*offset));
             }
 
             Instruction::IReturn(()) => return match stack_frame.pop_stack() {
@@ -385,9 +400,24 @@ impl<'a> Runtime<'a> {
             println!("{}: {:?}, {}", instruction_counter, instruction, instruction.get_size());
 
             match self.exec(&instruction, &mut stack_frame, &mut context) {
-                Ok(InstructionResult::Continue) => { /* nop, just keep executing */ }
-                Ok(InstructionResult::Goto(offset)) => {
-                    //TODO
+                Ok(InstructionResult::Continue) => {
+                    /* nop, just keep executing */
+                    instruction_counter += instruction.get_size();
+                }
+                Ok(InstructionResult::GotoAbsolute(offset)) => {
+                    instruction_counter = offset;
+                    ins.goto(instruction_counter);
+                }
+                Ok(InstructionResult::GotoRelative(offset)) => {
+                    println!("GOTO({} + {})", offset, instruction_counter);
+                    let tmp = instruction_counter as i64 + offset as i64;
+                    instruction_counter = if tmp > 0 {
+                        tmp as usize
+                    } else {
+                        return Err(RuntimeError::GenericError { message: format!("instruction index would be negative") });
+                    };
+                    println!("GOTO: {}", instruction_counter);
+                    ins.goto(instruction_counter);
                 }
                 Ok(InstructionResult::Return(return_value)) => {
                     self.check_return_type(method.get_signature().return_type, &return_value);
@@ -395,8 +425,6 @@ impl<'a> Runtime<'a> {
                 }
                 Err(err) => return Err(err)
             }
-
-            instruction_counter += instruction.get_size();
             println!("{:?}, return {:?}", stack_frame, context.return_value);
         }
 
@@ -431,7 +459,7 @@ mod test {
     use java::runtime::Runtime;
     use java::runtime::StackValue;
 
-    #[test] //TODO
+    #[test]
     fn test_basic_math() {
         let simple_match_sample = include_bytes!("../../../sample/SimpleMath.class");
         let class = read_class_file(simple_match_sample).unwrap().1;
@@ -439,5 +467,15 @@ mod test {
         let result = rt.exec_method_on_main("testMe").unwrap();
 
         assert_eq!(Some(StackValue::Integer(46)), result)
+    }
+
+    #[test]
+    fn test_basic_math_with_loop() {
+        let simple_match_sample = include_bytes!("../../../sample/SimpleMathWithLoop.class");
+        let class = read_class_file(simple_match_sample).unwrap().1;
+        let mut rt = Runtime::create(class);
+        let result = rt.exec_method_on_main("testMe").unwrap();
+
+        assert_eq!(Some(StackValue::Integer(203)), result)
     }
 }
