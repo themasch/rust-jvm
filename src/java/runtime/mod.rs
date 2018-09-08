@@ -39,7 +39,7 @@ enum LocalVariable {
     Integer(i64),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum StackValue {
     None,
     Null,
@@ -104,6 +104,14 @@ impl StackFrame {
     }
 }
 
+/// this might be terrible named (it is).
+/// it contains information on how the interpreter should continue after an instruction
+/// has been executed
+enum InstructionResult {
+    Continue,
+    Goto(i32),
+    Return(Option<StackValue>),
+}
 
 pub struct Context<'b> {
     return_value: Option<StackValue>,
@@ -181,6 +189,17 @@ impl<'a> Runtime<'a> {
         }
     }
 
+    #[cfg(test)]
+    pub fn exec_method_on_main(&mut self, method_name: &str) -> Result<Option<StackValue>, RuntimeError> {
+        let class = self.classes.get(&self.main_class).expect("no main class loaded").clone();
+        let method = class.methods.iter().find(|method| method.name.eq(method_name));
+        if method.is_none() {
+            return Err(RuntimeError::GenericError { message: format!("Class {} does not have a main method", class.get_class_name()) });
+        }
+
+        return self.run_method(method.unwrap(), class.clone(), vec![]);
+    }
+
     /// stores the top stack value into the local variable at `offset` as an integer
     /// since our stack is typed, we only do this when the type of the uppermost stack value is integer, too.
     fn exec_istore(stack_frame: &mut StackFrame, offset: usize) -> Result<(), RuntimeError> {
@@ -214,7 +233,7 @@ impl<'a> Runtime<'a> {
         Ok(())
     }
 
-    fn exec(&mut self, instruction: &Instruction, mut stack_frame: &mut StackFrame, context: &mut Context<'a>) -> Result<(), RuntimeError> {
+    fn exec(&mut self, instruction: &Instruction, mut stack_frame: &mut StackFrame, context: &mut Context<'a>) -> Result<InstructionResult, RuntimeError> {
         // since most of the instructions just operate on the StackFrame, and the return value
         // it might be useful to move these implementations somewhere else.
         // although some instructions actually need more knownledge about the context, like the
@@ -283,14 +302,14 @@ impl<'a> Runtime<'a> {
                 ins.goto(usize::from(new_offset as u16));*/
             }
 
-            Instruction::IReturn(()) => match stack_frame.pop_stack() {
-                Some(StackValue::Integer(ret)) => context.return_value = Some(StackValue::Integer(ret)),
-                Some(_) => return Err(RuntimeError::StackType { expected: format!("Integer") }),
-                None => return Err(RuntimeError::EmptyStack)
-            }
+            Instruction::IReturn(()) => return match stack_frame.pop_stack() {
+                Some(StackValue::Integer(ret)) => Ok(InstructionResult::Return(Some(StackValue::Integer(ret)))),
+                Some(_) => Err(RuntimeError::StackType { expected: format!("Integer") }),
+                None => Err(RuntimeError::EmptyStack)
+            },
 
             // b0..
-            Instruction::Return(()) => context.return_value = None,
+            Instruction::Return(()) => return Ok(InstructionResult::Return(None)),
             Instruction::InvokeStatic(method_offset) => {
                 let class = &context.class;
                 match class.get_constant(*method_offset) {
@@ -322,7 +341,9 @@ impl<'a> Runtime<'a> {
                             args.reverse();
 
                             println!("{:?}, {:?}", method, args);
-                            match self.run_method(method, class.clone(), args) {
+                            let return_val = self.run_method(method, class.clone(), args);
+                            println!(" => return value: {:?}", return_val);
+                            match return_val {
                                 Ok(Some(stack_value)) => stack_frame.push_stack(stack_value),
                                 Ok(None) => (),
                                 Err(err) => return Err(err)
@@ -345,7 +366,7 @@ impl<'a> Runtime<'a> {
             _ => return Err(RuntimeError::GenericError { message: format!("unknown instruction") })
         };
 
-        Ok(())
+        Ok(InstructionResult::Continue)
     }
 
     fn run_method(&mut self, method: &Method, class: Arc<ClassFile<'a>>, arguments: Vec<LocalVariable>) -> Result<Option<StackValue>, RuntimeError> {
@@ -363,32 +384,60 @@ impl<'a> Runtime<'a> {
         while let Some(instruction) = ins.next() {
             println!("{}: {:?}, {}", instruction_counter, instruction, instruction.get_size());
 
-            self.exec(&instruction, &mut stack_frame, &mut context);
+            match self.exec(&instruction, &mut stack_frame, &mut context) {
+                Ok(InstructionResult::Continue) => { /* nop, just keep executing */ }
+                Ok(InstructionResult::Goto(offset)) => {
+                    //TODO
+                }
+                Ok(InstructionResult::Return(return_value)) => {
+                    self.check_return_type(method.get_signature().return_type, &return_value);
+                    return Ok(return_value);
+                }
+                Err(err) => return Err(err)
+            }
 
             instruction_counter += instruction.get_size();
             println!("{:?}, return {:?}", stack_frame, context.return_value);
         }
 
-        // this is just here for internal verification.
-        // the compiler should prevent these type of errors.
-        // if something like this happens, the jvm has f**ked up, or the bytecode is broken
-        match method.get_signature().return_type {
-            ValueType::Void => if context.return_value.is_some() {
-                return Err(RuntimeError::GenericError { message: format!("invalid return type. expected void.") });
-            },
-            ValueType::Integer => match context.return_value {
-                Some(StackValue::Integer(_)) => (),
-                Some(StackValue::Null) => (),
-                _ => return Err(RuntimeError::GenericError { message: format!("invalid return type. expected integer.") })
-            },
-            _ => (),
-        };
+        Err(RuntimeError::GenericError { message: format!("reached end of method with no return") })
+    }
 
-        Ok(context.return_value)
+    /// this is just here for internal verification.
+    /// the compiler should prevent these type of errors.
+    /// if something like this happens, the jvm has f**ked up, or the bytecode is broken
+    fn check_return_type(&self, return_type: ValueType, return_value: &Option<StackValue>) -> Result<(), RuntimeError> {
+        return match return_type {
+            ValueType::Void => if return_value.is_some() {
+                Err(RuntimeError::GenericError { message: format!("invalid return type. expected void.") })
+            } else {
+                Ok(())
+            },
+            ValueType::Integer => match return_value {
+                Some(StackValue::Integer(_)) => Ok(()),
+                Some(StackValue::Null) => Ok(()),
+                _ => Err(RuntimeError::GenericError { message: format!("invalid return type. expected integer.") })
+            },
+            _ => Ok(()),
+        };
     }
 }
 
 #[cfg(test)]
 mod test {
-    //TODO: write some test. at least for run_method.
+    use java::class_file::ClassFile;
+    use java::class_file::Method;
+    use java::class_file::read_class_file;
+    use java::runtime::Runtime;
+    use java::runtime::StackValue;
+
+    #[test] //TODO
+    fn test_basic_math() {
+        let simple_match_sample = include_bytes!("../../../sample/SimpleMath.class");
+        let class = read_class_file(simple_match_sample).unwrap().1;
+        let mut rt = Runtime::create(class);
+        let result = rt.exec_method_on_main("testMe").unwrap();
+
+        assert_eq!(Some(StackValue::Integer(46)), result)
+    }
 }
