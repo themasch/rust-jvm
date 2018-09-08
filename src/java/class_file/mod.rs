@@ -111,6 +111,7 @@ pub struct MethodDescriptor {
 
 use nom::IResult;
 use std::slice::Iter;
+use std::collections::HashMap;
 
 impl FromStr for MethodDescriptor {
     type Err = ();
@@ -123,9 +124,72 @@ impl FromStr for MethodDescriptor {
     }
 }
 
+pub struct Instructions {
+    instructions: Vec<Instruction>,
+    index: HashMap<usize, usize>,
+    current: usize,
+}
+
+impl Instructions {
+    pub fn create(instructions: Vec<Instruction>) -> Instructions {
+        Instructions {
+            instructions,
+            index: HashMap::new(),
+            current: 0,
+        }
+    }
+
+    fn offset_to_index(&mut self, offset: usize) -> Option<usize> {
+        if self.index.contains_key(&offset) {
+            return self.index.get(&offset).map(|value| *value);
+        }
+
+        let mut curr_offset = 0;
+        let mut curr_index = 0;
+        for instruction in self.instructions.iter() {
+            let size = instruction.get_size();
+            if !self.index.contains_key(&curr_offset) {
+                self.index.insert(curr_offset, curr_index);
+            }
+
+            if curr_offset + size > offset {
+                return Some(curr_index);
+            }
+
+            curr_offset = curr_offset + size;
+            curr_index += 1;
+        }
+
+        None
+    }
+
+    pub fn goto(&mut self, offset: usize) -> bool {
+        let index = self.offset_to_index(offset);
+        if let Some(index) = index {
+            self.current = index;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Iterator for Instructions {
+    type Item = Instruction;
+
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        let item = self.instructions.get(self.current);
+
+        self.current += 1;
+
+
+        item.map(|x| x.clone())
+    }
+}
+
 impl<'a> Method<'a> {
-    pub fn instructions(&self) -> Vec<Instruction> {
-        self.get_code().unwrap().instructions().unwrap()
+    pub fn instructions(&self) -> Instructions {
+        Instructions::create(self.get_code().unwrap().instructions().unwrap())
     }
 
     pub fn get_code(&self) -> Option<&CodeBlock<'a>> {

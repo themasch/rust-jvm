@@ -6,6 +6,9 @@ use std::sync::Arc;
 use java::class_file::ConstantType;
 use java::class_file::ValueType;
 
+
+use java::instructions::Instruction;
+
 /// these type of errors should not happen at all.
 /// Triggering one of these means the jvm is probably buggy since the compiler should prevent these.
 /// This is for stuff like "we tried to pop the stack but it was empty" or "i need to load an int,
@@ -102,13 +105,17 @@ impl StackFrame {
 }
 
 
+pub struct Context<'b> {
+    return_value: Option<StackValue>,
+    class: Arc<ClassFile<'b>>,
+}
+
 pub struct Runtime<'a> {
     classes: HashMap<String, Arc<ClassFile<'a>>>,
     classpath: Vec<PathBuf>,
     main_class: String,
     class_index_map: HashMap<String, HashMap<usize, String>>,
 }
-
 
 impl<'a> Runtime<'a> {
     pub fn create(main_class: ClassFile<'a>) -> Runtime<'a> {
@@ -207,146 +214,169 @@ impl<'a> Runtime<'a> {
         Ok(())
     }
 
+    fn exec(&mut self, instruction: &Instruction, mut stack_frame: &mut StackFrame, context: &mut Context<'a>) -> Result<(), RuntimeError> {
+        // since most of the instructions just operate on the StackFrame, and the return value
+        // it might be useful to move these implementations somewhere else.
+        // although some instructions actually need more knownledge about the context, like the
+        // current class, loaded classes, change the next instruction etc.
+        match instruction {
+            //00
+            Instruction::IConstm1(()) => stack_frame.push_stack(StackValue::Integer(-1)),
+            Instruction::IConst0(()) => stack_frame.push_stack(StackValue::Integer(0)),
+            Instruction::IConst1(()) => stack_frame.push_stack(StackValue::Integer(1)),
+            Instruction::IConst2(()) => stack_frame.push_stack(StackValue::Integer(2)),
+            Instruction::IConst3(()) => stack_frame.push_stack(StackValue::Integer(3)),
+            Instruction::IConst4(()) => stack_frame.push_stack(StackValue::Integer(4)),
+            Instruction::IConst5(()) => stack_frame.push_stack(StackValue::Integer(5)),
+            // 10...
+            Instruction::BIPush(value) =>
+                stack_frame.push_stack(StackValue::Integer(i64::from(*value))),
+            Instruction::SIPush(value) =>
+                stack_frame.push_stack(StackValue::Integer(i64::from(*value))),
+            Instruction::ILoad(offset) => Runtime::exec_iload(&mut stack_frame, usize::from(*offset))?,
+            Instruction::ILoad0(()) => Runtime::exec_iload(&mut stack_frame, 0)?,
+            Instruction::ILoad1(()) => Runtime::exec_iload(&mut stack_frame, 1)?,
+            Instruction::ILoad2(()) => Runtime::exec_iload(&mut stack_frame, 2)?,
+            Instruction::ILoad3(()) => Runtime::exec_iload(&mut stack_frame, 3)?,
+            // 20..
+            // 30..
+            Instruction::IStore(offset) => Runtime::exec_istore(&mut stack_frame, usize::from(*offset))?,
+            Instruction::IStore0(()) => Runtime::exec_istore(&mut stack_frame, 0)?,
+
+            Instruction::IStore1(()) => Runtime::exec_istore(&mut stack_frame, 1)?,
+
+            Instruction::IStore2(()) => Runtime::exec_istore(&mut stack_frame, 2)?,
+
+            Instruction::IStore3(()) => Runtime::exec_istore(&mut stack_frame, 3)?,
+            // 40..
+            // 50..
+            // 60..
+            Instruction::IAdd(()) => match (stack_frame.pop_stack(), stack_frame.pop_stack()) {
+                (Some(StackValue::Integer(lh)), Some(StackValue::Integer(rh))) =>
+                    stack_frame.push_stack(StackValue::Integer(lh + rh)),
+                (Some(_), Some(_)) =>
+                    return Err(RuntimeError::StackType { expected: format!("integer") }),
+                (None, None) | (Some(_), None) =>
+                    return Err(RuntimeError::EmptyStack),
+                _ =>
+                    return Err(RuntimeError::GenericError { message: format!("IAdd") })
+            }
+            // 80..
+            Instruction::IInc((offset, value)) => match stack_frame.get_variable_mut(usize::from(*offset)) {
+                Some(LocalVariable::Integer(intvalue)) => *intvalue = *intvalue + 1,
+                Some(_) => return Err(RuntimeError::VariableType { expected: format!("integer"), offset: usize::from(*offset) }),
+                None => return Err(RuntimeError::VariableOutOfScope)
+            }
+
+            // a0..
+            Instruction::IfICmpGE(instruction) => {
+                // would be nice to know the instruction offset now…
+                // additionally we need a way to "jump" to that instruction. currently we are just looping from top to bottom
+            }
+
+            Instruction::Goto(offset) => {
+                /*let new_offset = offset as i64 + instruction_counter as i64;
+                println!("GOTO: {} + {} = {}", offset, instruction_counter, new_offset);
+                if new_offset < 0 {
+                    panic!();
+                }
+                ins.goto(usize::from(new_offset as u16));*/
+            }
+
+            Instruction::IReturn(()) => match stack_frame.pop_stack() {
+                Some(StackValue::Integer(ret)) => context.return_value = Some(StackValue::Integer(ret)),
+                Some(_) => return Err(RuntimeError::StackType { expected: format!("Integer") }),
+                None => return Err(RuntimeError::EmptyStack)
+            }
+
+            // b0..
+            Instruction::Return(()) => context.return_value = None,
+            Instruction::InvokeStatic(method_offset) => {
+                let class = &context.class;
+                match class.get_constant(*method_offset) {
+                    Some(ConstantType::MethodRef { class_index, name_and_type_index }) => {
+                        let cls_name = {
+                            let other_class = self.class_index_map.get(class.get_class_name()).unwrap().get(&(*class_index as usize));
+                            if other_class.is_none() {
+                                return Err(RuntimeError::GenericError { message: format!("class not found {}", class_index) });
+                            }
+                            other_class.unwrap().clone()
+                        };
+
+
+                        if cls_name.eq(class.get_class_name()) {
+                            let method = match class.get_method_from_nat(*name_and_type_index) {
+                                Some(m) => m,
+                                None => return Err(RuntimeError::MethodNotFound)
+                            };
+
+                            let mut args = method.get_signature().arguments.iter().map(|arg_type| {
+                                //TODO: we really should check the type here. some day.
+                                match stack_frame.pop_stack() {
+                                    Some(StackValue::Integer(intvalue)) => Ok(LocalVariable::Integer(intvalue)),
+                                    Some(StackValue::None) => Ok(LocalVariable::None), //??? None => undefined, Null => null.
+                                    Some(StackValue::Null) => Ok(LocalVariable::Null),
+                                    None => Err(RuntimeError::EmptyStack)
+                                }
+                            }).collect::<Result<Vec<LocalVariable>, RuntimeError>>()?;
+                            args.reverse();
+
+                            println!("{:?}, {:?}", method, args);
+                            match self.run_method(method, class.clone(), args) {
+                                Ok(Some(stack_value)) => stack_frame.push_stack(stack_value),
+                                Ok(None) => (),
+                                Err(err) => return Err(err)
+                            };
+                        }
+                        //
+                    }
+                    Some(_) => {
+                        return Err(RuntimeError::GenericError {
+                            message: format!("invalid method offset {}", method_offset)
+                        });
+                    }
+                    None => {
+                        return Err(RuntimeError::GenericError {
+                            message: format!("invalid method offset {}", method_offset)
+                        });
+                    }
+                }
+            }
+            _ => return Err(RuntimeError::GenericError { message: format!("unknown instruction") })
+        };
+
+        Ok(())
+    }
+
     fn run_method(&mut self, method: &Method, class: Arc<ClassFile<'a>>, arguments: Vec<LocalVariable>) -> Result<Option<StackValue>, RuntimeError> {
         println!("running method {}", method.name);
-        use java::instructions::Instruction;
         let mut stack_frame = StackFrame::for_method(method, arguments);
         let mut return_value: Option<StackValue> = None;
         println!("{:?}", stack_frame);
-        for instruction in method.instructions() {
-            println!("{:?}", instruction);
+        let mut instruction_counter: usize = 0;
+        let mut ins = method.instructions();
+        let mut context = Context {
+            return_value: None,
+            class: class.clone(),
+        };
 
-            // since most of the instructions just operate on the StackFrame, and the return value
-            // it might be useful to move these implementations somewhere else.
-            // although some instructions actually need more knownledge about the context, like the
-            // current class, loaded classes, change the next instruction etc.
-            match instruction {
-                //00
-                Instruction::IConstm1(()) => stack_frame.push_stack(StackValue::Integer(-1)),
-                Instruction::IConst0(()) => stack_frame.push_stack(StackValue::Integer(0)),
-                Instruction::IConst1(()) => stack_frame.push_stack(StackValue::Integer(1)),
-                Instruction::IConst2(()) => stack_frame.push_stack(StackValue::Integer(2)),
-                Instruction::IConst3(()) => stack_frame.push_stack(StackValue::Integer(3)),
-                Instruction::IConst4(()) => stack_frame.push_stack(StackValue::Integer(4)),
-                Instruction::IConst5(()) => stack_frame.push_stack(StackValue::Integer(5)),
-                // 10...
-                Instruction::BIPush(value) =>
-                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
-                Instruction::SIPush(value) =>
-                    stack_frame.push_stack(StackValue::Integer(i64::from(value))),
-                Instruction::ILoad(offset) => Runtime::exec_iload(&mut stack_frame, usize::from(offset))?,
-                Instruction::ILoad0(()) => Runtime::exec_iload(&mut stack_frame, 0)?,
-                Instruction::ILoad1(()) => Runtime::exec_iload(&mut stack_frame, 1)?,
-                Instruction::ILoad2(()) => Runtime::exec_iload(&mut stack_frame, 2)?,
-                Instruction::ILoad3(()) => Runtime::exec_iload(&mut stack_frame, 3)?,
-                // 20..
-                // 30..
-                Instruction::IStore(offset) => Runtime::exec_istore(&mut stack_frame, usize::from(offset))?,
-                Instruction::IStore0(()) => Runtime::exec_istore(&mut stack_frame, 0)?,
+        while let Some(instruction) = ins.next() {
+            println!("{}: {:?}, {}", instruction_counter, instruction, instruction.get_size());
 
-                Instruction::IStore1(()) => Runtime::exec_istore(&mut stack_frame, 1)?,
+            self.exec(&instruction, &mut stack_frame, &mut context);
 
-                Instruction::IStore2(()) => Runtime::exec_istore(&mut stack_frame, 2)?,
-
-                Instruction::IStore3(()) => Runtime::exec_istore(&mut stack_frame, 3)?,
-                // 40..
-                // 50..
-                // 60..
-                Instruction::IAdd(()) => match (stack_frame.pop_stack(), stack_frame.pop_stack()) {
-                    (Some(StackValue::Integer(lh)), Some(StackValue::Integer(rh))) =>
-                        stack_frame.push_stack(StackValue::Integer(lh + rh)),
-                    (Some(_), Some(_)) =>
-                        return Err(RuntimeError::StackType { expected: format!("integer") }),
-                    (None, None) | (Some(_), None) =>
-                        return Err(RuntimeError::EmptyStack),
-                    _ =>
-                        return Err(RuntimeError::GenericError { message: format!("IAdd") })
-                }
-                // 80..
-                Instruction::IInc((offset, value)) => match stack_frame.get_variable_mut(usize::from(offset)) {
-                    Some(LocalVariable::Integer(intvalue)) => *intvalue = *intvalue + 1,
-                    Some(_) => return Err(RuntimeError::VariableType { expected: format!("integer"), offset: usize::from(offset) }),
-                    None => return Err(RuntimeError::VariableOutOfScope)
-                }
-
-                // a0..
-                Instruction::IfICmpGE(instruction) => {
-                    // would be nice to know the instruction offset now…
-                    // additionally we need a way to "jump" to that instruction. currently we are just looping from top to bottom
-                }
-
-                Instruction::IReturn(()) => match stack_frame.pop_stack() {
-                    Some(StackValue::Integer(ret)) => return_value = Some(StackValue::Integer(ret)),
-                    Some(_) => return Err(RuntimeError::StackType { expected: format!("Integer") }),
-                    None => return Err(RuntimeError::EmptyStack)
-                }
-
-                // b0..
-                Instruction::Return(()) => return_value = None,
-                Instruction::InvokeStatic(method_offset) => {
-                    match class.get_constant(method_offset) {
-                        Some(ConstantType::MethodRef { class_index, name_and_type_index }) => {
-                            let cls_name = {
-                                let other_class = self.class_index_map.get(class.get_class_name()).unwrap().get(&(*class_index as usize));
-                                if other_class.is_none() {
-                                    return Err(RuntimeError::GenericError { message: format!("class not found {}", class_index) });
-                                }
-                                other_class.unwrap().clone()
-                            };
-
-
-                            if cls_name.eq(class.get_class_name()) {
-                                let method = match class.get_method_from_nat(*name_and_type_index) {
-                                    Some(m) => m,
-                                    None => return Err(RuntimeError::MethodNotFound)
-                                };
-
-                                let mut args = method.get_signature().arguments.iter().map(|arg_type| {
-                                    //TODO: we really should check the type here. some day.
-                                    match stack_frame.pop_stack() {
-                                        Some(StackValue::Integer(intvalue)) => Ok(LocalVariable::Integer(intvalue)),
-                                        Some(StackValue::None) => Ok(LocalVariable::None), //??? None => undefined, Null => null.
-                                        Some(StackValue::Null) => Ok(LocalVariable::Null),
-                                        None => Err(RuntimeError::EmptyStack)
-                                    }
-                                }).collect::<Result<Vec<LocalVariable>, RuntimeError>>()?;
-                                args.reverse();
-
-                                println!("{:?}, {:?}", method, args);
-                                match self.run_method(method, class.clone(), args) {
-                                    Ok(Some(stack_value)) => stack_frame.push_stack(stack_value),
-                                    Ok(None) => (),
-                                    Err(err) => return Err(err)
-                                };
-                            }
-                            //
-                        }
-                        Some(_) => {
-                            return Err(RuntimeError::GenericError {
-                                message: format!("invalid method offset {}", method_offset)
-                            });
-                        }
-                        None => {
-                            return Err(RuntimeError::GenericError {
-                                message: format!("invalid method offset {}", method_offset)
-                            });
-                        }
-                    }
-                }
-                _ => return Err(RuntimeError::GenericError { message: format!("unknown instruction") })
-            }
-
-            println!("{:?}, return {:?}", stack_frame, return_value);
+            instruction_counter += instruction.get_size();
+            println!("{:?}, return {:?}", stack_frame, context.return_value);
         }
 
         // this is just here for internal verification.
         // the compiler should prevent these type of errors.
         // if something like this happens, the jvm has f**ked up, or the bytecode is broken
         match method.get_signature().return_type {
-            ValueType::Void => if return_value.is_some() {
+            ValueType::Void => if context.return_value.is_some() {
                 return Err(RuntimeError::GenericError { message: format!("invalid return type. expected void.") });
             },
-            ValueType::Integer => match return_value {
+            ValueType::Integer => match context.return_value {
                 Some(StackValue::Integer(_)) => (),
                 Some(StackValue::Null) => (),
                 _ => return Err(RuntimeError::GenericError { message: format!("invalid return type. expected integer.") })
@@ -354,7 +384,7 @@ impl<'a> Runtime<'a> {
             _ => (),
         };
 
-        Ok(return_value)
+        Ok(context.return_value)
     }
 }
 
